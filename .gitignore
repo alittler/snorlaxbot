@@ -1,0 +1,4 @@
+# SnorlaxBot runtime artifacts
+logs/
+.snorlaxbot.conf
+*.bak.*
