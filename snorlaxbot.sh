@@ -1,1163 +1,559 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# ============================================================
+#  filebot-manager.sh
+#  FileBot AMC — Terminal Management Interface
+# ============================================================
 
-set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
 
-SCRIPT_PATH=""
-SCRIPT_DIR=""
-APP_NAME="SnorlaxBot"
-APP_DESC="FileBot Manager"
-CONFIG_FILE=""
-LOG_DIR=""
-LOG_FILE=""
-IMPORT_REPORT_FILE=""
+# ── Colors ───────────────────────────────────────────────────
+CY='\033[0;36m'   # cyan       — labels, brackets
+GR='\033[0;32m'   # green      — menu items
+YE='\033[1;33m'   # yellow     — warnings / highlights
+RE='\033[0;31m'   # red        — errors
+BL='\033[0;34m'   # blue       — ascii art / dividers
+WH='\033[1;37m'   # white bold — section headers
+DI='\033[2m'      # dim
+N='\033[0m'       # reset
 
-FINISHED_DIR=""
-TEMP_DIR=""
-WATCH_DIR=""
-OUTPUT_BASE=""
-MOVIES_DIR=""
-SERIES_DIR=""
-QB_CONFIG_PATH=""
-QBITTORRENT_VARIANT=""
-QBITTORRENT_MODE=""
-QBITTORRENT_CONTAINER=""
-QBITTORRENT_COMPLETION_HOOK=""
-DOCKER_COMPOSE_FILE=""
-API_USERNAME=""
-API_PASSWORD=""
-API_TOKEN=""
-PLEX_URL="http://localhost:32400/identity"
-PLEX_TOKEN=""
-LAST_DISCOVERED_PATHS=""
-MOVIE_FORMAT=""
-SERIES_FORMAT=""
-CLEANUP_DAYS=7
-BBB_TORRENT_URL="https://webtorrent.io/torrents/big-buck-bunny.torrent"
+# ── Defaults ─────────────────────────────────────────────────
+DEFAULT_FINISHED_DIR="/mnt/Media/Torrents/finished"
+DEFAULT_TEMP_DIR="/mnt/Media/Torrents/temp"
+DEFAULT_OUTPUT_BASE="/mnt/Media"
+DEFAULT_MOVIES_DIR="/mnt/Media/Movies"
+DEFAULT_SERIES_DIR="/mnt/TV_Shows/TV Shows"
+DEFAULT_PLEX_HOST="localhost"
 
-resolve_script_path() {
-  local source="${BASH_SOURCE[0]}"
-  while [ -h "$source" ]; do
-    local dir
-    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
-    source="$(readlink "$source")"
-    [[ "$source" != /* ]] && source="$dir/$source"
-  done
-  SCRIPT_PATH="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)/$(basename "$source")"
-  SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-  CONFIG_FILE="$SCRIPT_DIR/.snorlaxbot.conf"
-  LOG_DIR="$SCRIPT_DIR/logs"
-  LOG_FILE="$LOG_DIR/snorlaxbot.log"
-  IMPORT_REPORT_FILE="$LOG_DIR/import-report.log"
-}
-
-log_msg() {
-  mkdir -p "$LOG_DIR"
-  local level="$1"
-  shift
-  local message="$*"
-  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$message" | tee -a "$LOG_FILE"
-}
-
-mask_secret() {
-  local value="${1:-}"
-  if [ -z "$value" ]; then
-    echo "<unset>"
-  elif [ "${#value}" -le 4 ]; then
-    echo "****"
-  else
-    echo "${value:0:2}****${value: -2}"
-  fi
-}
-
-escape_for_conf() {
-  printf '%q' "$1"
-}
-
-load_defaults() {
-  FINISHED_DIR="$HOME/Downloads/finished"
-  TEMP_DIR="$HOME/Downloads/incomplete"
-  WATCH_DIR="$HOME/Downloads/watch"
-  OUTPUT_BASE="$HOME/Media"
-  MOVIES_DIR="$OUTPUT_BASE/Movies"
-  SERIES_DIR="$OUTPUT_BASE/TV"
-  QB_CONFIG_PATH="$HOME/.config/qBittorrent/qBittorrent.conf"
-  QBITTORRENT_VARIANT=""
-  QBITTORRENT_MODE=""
-  QBITTORRENT_CONTAINER=""
-  QBITTORRENT_COMPLETION_HOOK=""
-  DOCKER_COMPOSE_FILE=""
-  API_USERNAME=""
-  API_PASSWORD=""
-  API_TOKEN=""
-  PLEX_URL="http://localhost:32400/identity"
-  PLEX_TOKEN=""
-  LAST_DISCOVERED_PATHS=""
-  MOVIE_FORMAT="{n} ({y})"
-  SERIES_FORMAT="{n}/Season {s}/{n} - {s00e00} - {t}"
-  CLEANUP_DAYS=7
-  BBB_TORRENT_URL="https://webtorrent.io/torrents/big-buck-bunny.torrent"
+# ── Load / Save .env ─────────────────────────────────────────
+load_config() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+  FINISHED_DIR="${FINISHED_DIR:-$DEFAULT_FINISHED_DIR}"
+  TEMP_DIR="${TEMP_DIR:-$DEFAULT_TEMP_DIR}"
+  OUTPUT_BASE="${OUTPUT_BASE:-$DEFAULT_OUTPUT_BASE}"
+  MOVIES_DIR="${MOVIES_DIR:-$DEFAULT_MOVIES_DIR}"
+  SERIES_DIR="${SERIES_DIR:-$DEFAULT_SERIES_DIR}"
+  PLEX_HOST="${PLEX_HOST:-$DEFAULT_PLEX_HOST}"
+  PLEX_TOKEN="${PLEX_TOKEN:-}"
+  GMAIL_USER="${GMAIL_USER:-}"
+  GMAIL_PASS="${GMAIL_PASS:-}"
+  PUSHOVER_USER="${PUSHOVER_USER:-}"
+  PUSHOVER_TOKEN="${PUSHOVER_TOKEN:-}"
 }
 
 save_config() {
-  cat > "$CONFIG_FILE" <<CFG
-FINISHED_DIR=$(escape_for_conf "$FINISHED_DIR")
-TEMP_DIR=$(escape_for_conf "$TEMP_DIR")
-WATCH_DIR=$(escape_for_conf "$WATCH_DIR")
-OUTPUT_BASE=$(escape_for_conf "$OUTPUT_BASE")
-MOVIES_DIR=$(escape_for_conf "$MOVIES_DIR")
-SERIES_DIR=$(escape_for_conf "$SERIES_DIR")
-QB_CONFIG_PATH=$(escape_for_conf "$QB_CONFIG_PATH")
-QBITTORRENT_VARIANT=$(escape_for_conf "$QBITTORRENT_VARIANT")
-QBITTORRENT_MODE=$(escape_for_conf "$QBITTORRENT_MODE")
-QBITTORRENT_CONTAINER=$(escape_for_conf "$QBITTORRENT_CONTAINER")
-QBITTORRENT_COMPLETION_HOOK=$(escape_for_conf "$QBITTORRENT_COMPLETION_HOOK")
-DOCKER_COMPOSE_FILE=$(escape_for_conf "$DOCKER_COMPOSE_FILE")
-API_USERNAME=$(escape_for_conf "$API_USERNAME")
-API_PASSWORD=$(escape_for_conf "$API_PASSWORD")
-API_TOKEN=$(escape_for_conf "$API_TOKEN")
-PLEX_URL=$(escape_for_conf "$PLEX_URL")
-PLEX_TOKEN=$(escape_for_conf "$PLEX_TOKEN")
-LAST_DISCOVERED_PATHS=$(escape_for_conf "$LAST_DISCOVERED_PATHS")
-MOVIE_FORMAT=$(escape_for_conf "$MOVIE_FORMAT")
-SERIES_FORMAT=$(escape_for_conf "$SERIES_FORMAT")
-CLEANUP_DAYS=$(escape_for_conf "$CLEANUP_DAYS")
-BBB_TORRENT_URL=$(escape_for_conf "$BBB_TORRENT_URL")
-CFG
-  log_msg "INFO" "Configuration saved to $CONFIG_FILE"
+  cat > "$ENV_FILE" <<EOF
+# FileBot Manager .env — $(date)
+FINISHED_DIR="$FINISHED_DIR"
+TEMP_DIR="$TEMP_DIR"
+OUTPUT_BASE="$OUTPUT_BASE"
+MOVIES_DIR="$MOVIES_DIR"
+SERIES_DIR="$SERIES_DIR"
+PLEX_HOST="$PLEX_HOST"
+PLEX_TOKEN="$PLEX_TOKEN"
+GMAIL_USER="$GMAIL_USER"
+GMAIL_PASS="$GMAIL_PASS"
+PUSHOVER_USER="$PUSHOVER_USER"
+PUSHOVER_TOKEN="$PUSHOVER_TOKEN"
+EOF
+  chmod 600 "$ENV_FILE"
 }
 
-load_config() {
-  load_defaults
-  if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-  fi
-  mkdir -p "$LOG_DIR"
+# ── UI Primitives ─────────────────────────────────────────────
+divider() { echo -e "${BL}$(printf '═%.0s' {1..70})${N}"; }
+thin()    { echo -e "${DI}$(printf '─%.0s' {1..70})${N}"; }
+blank()   { echo ""; }
+
+ok()   { echo -e "  ${GR}[  OK  ]${N}  $1"; }
+fail() { echo -e "  ${RE}[ FAIL ]${N}  $1"; }
+info() { echo -e "  ${CY}[ INFO ]${N}  $1"; }
+warn() { echo -e "  ${YE}[ WARN ]${N}  $1"; }
+
+confirm() {
+  printf "  ${CY}$1 [y/N]:${N} "
+  read -r ans
+  [[ "$ans" =~ ^[Yy]$ ]]
 }
 
-snorlax_ascii() {
-  cat <<'ART'
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣶⣿⣶⣦⣄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣤⣶⣾⣿⣿⣷
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⠿⠿⠿⣿⣿⣿⣿⠿⠿⠿⢿⣿⣿⣿⣿⣿
-⠀⠀⠀⠀⠀⢀⡀⣄⠀⠀⠀⠀⠀⠀⠀⣿⣿⠟⠉⠀⢀⣀⠀⠀⠈⠉⠀⠀⣀⣀⠀⠀⠙⢿⣿⣿
-⠀⠀⠀⣀⣶⣿⣿⣿⣾⣇⠀⠀⠀⠀⢀⣿⠃⠀⠀⠀⠀⢀⣀⡀⠀⠀⠀⣀⡀⠀⠀⠀⠀⠀⠹⣿
-⠀⠀⠀⢻⣿⣿⣿⣿⣿⣿⣷⣄⠀⠀⣼⡏⠀⠀⠀⣀⣀⣉⠉⠩⠭⠭⠭⠥⠤⢀⣀⣀⠀⠀⠀⢻⡇
-⠀⠀⠀⣸⣿⣿⣿⣿⣿⣿⣿⣿⣷⣄⣿⠷⠒⠋⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠑⠒⠼⣧
-⠀⠀⠀⢹⣿⣿⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⣦⣀
-⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⣷⣦⣀
-⠀⠀⠀⠈⣿⣿⣿⣿⣿⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣷⣄
-⠀⠀⠀⠀⢹⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣷⣄
-⠀⠀⠀⠀⠀⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⣿⣿⣿⣿⣧⡀
-⠀⠀⠀⠀⢠⣿⣿⣿⣿⣿⣶⣤⣄⣠⣤⣤⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷
-⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧
-⠀⠀⣀⠀⢸⡿⠿⣿⡿⠋⠉⠛⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⠉⠀⠻⠿⠟⠉⢙⣿⣿⣿⣿⣿⣿⡇
-⠀⠀⢿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⠁⠀⠀⠀⠀⠀⠀⠀⠈⠻⠿⢿⡿⣿⠳
-⠀⠀⡞⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣇⡀
-⢀⣸⣀⡀⠀⠀⠀⠀⣠⣴⣾⣿⣷⣆⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⣰⣿⣿⣿⣿⣷⣦⠀⠀⠀⠀⢿⣿⠿⠃
-⠘⢿⡿⠃⠀⠀⠀⣸⣿⣿⣿⣿⣿⡿⢀⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡀⢻⣿⣿⣿⣿⣿⣿⠂⠀⠀⠀⡸
-⠀⠀⠳⣄⠀⠀⠀⠹⣿⣿⣿⡿⠛⣠⠾⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠿⠿⠳⣄⠙⠛⠿⠿⠛⠉⠀⠀⣀⠜⠁
-⠀⠀⠀⠈⠑⠢⠤⠤⠬⠭⠥⠖⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠒⠢⠤⠤⠤⠒⠊
-ART
+prompt_input() {
+  local label="$1" current="$2"
+  printf "  ${CY}%-24s${N} ${DI}[%s]${N}\n  ${GR}>${N} " "$label" "$current"
+  read -r REPLY
+  [[ -z "$REPLY" ]] && REPLY="$current"
 }
 
-print_title_area() {
-  clear
-  snorlax_ascii
-  cat <<'TITLE'
-=========================================================
-                     FILEBOT AUTOMATION
-=========================================================
-TITLE
-  echo "$APP_NAME — $APP_DESC"
-  echo "Script: $SCRIPT_PATH"
-  echo
-}
-
-print_section_header() {
-  local section="$1"
-  print_title_area
-  echo "-------------------- $section --------------------"
-}
-
-pause_prompt() {
-  echo
-  read -r -p "Press Enter to continue..." _
-}
-
-prompt_with_default() {
+prompt_secret() {
   local label="$1"
-  local current="$2"
-  local input
-  read -r -p "$label [$current]: " input
-  if [ -n "$input" ]; then
-    echo "$input"
+  printf "  ${CY}%-24s${N} ${DI}[hidden]${N}\n  ${GR}>${N} " "$label"
+  read -rs REPLY
+  echo ""
+}
+
+pause() {
+  blank
+  printf "  ${DI}Press Enter to continue...${N}"
+  read -r
+}
+
+# ── ASCII Header ──────────────────────────────────────────────
+print_header() {
+  clear
+  echo -e "${BL}"
+  echo "    ███████╗██╗██╗     ███████╗██████╗  ██████╗ ████████╗"
+  echo "    ██╔════╝██║██║     ██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝"
+  echo "    █████╗  ██║██║     █████╗  ██████╔╝██║   ██║   ██║   "
+  echo "    ██╔══╝  ██║██║     ██╔══╝  ██╔══██╗██║   ██║   ██║   "
+  echo "    ██║     ██║███████╗███████╗██████╔╝╚██████╔╝   ██║   "
+  echo "    ╚═╝     ╚═╝╚══════╝╚══════╝╚═════╝  ╚═════╝    ╚═╝   "
+  echo -e "${N}"
+  divider
+
+  local cfg_status
+  if [[ -f "$ENV_FILE" ]]; then
+    cfg_status="${GR}ACTIVE${N}"
   else
-    echo "$current"
+    cfg_status="${RE}NO CONFIG${N}"
   fi
-}
 
-normalize_path() {
-  local raw_path="$1"
-  if command -v realpath >/dev/null 2>&1; then
-    realpath -m "$raw_path"
-  elif [ -d "$raw_path" ]; then
-    (cd "$raw_path" >/dev/null 2>&1 && pwd)
+  local filebot_status
+  if command -v filebot &>/dev/null; then
+    filebot_status="${GR}INSTALLED${N}"
   else
-    local base
-    base="$(basename "$raw_path")"
-    local dir
-    dir="$(dirname "$raw_path")"
-    (cd "$dir" >/dev/null 2>&1 && printf '%s/%s\n' "$(pwd)" "$base")
+    filebot_status="${YE}NOT FOUND${N}"
   fi
+
+  echo -e "  ${CY}HOST:${N} $(hostname)   ${CY}CONFIG:${N} $cfg_status   ${CY}FILEBOT:${N} $filebot_status"
+  echo -e "  ${DI}ENV: $ENV_FILE${N}"
+  divider
+  blank
 }
 
-build_qb_hook_command() {
-  printf '/bin/bash "%s" --auto-filebot "%%L" "%%N" "%%F"' "$SCRIPT_PATH"
+# ── Section header (inside submenus) ─────────────────────────
+section_header() {
+  clear
+  echo -e "${BL}"
+  echo "    ███████╗██╗██╗     ███████╗██████╗  ██████╗ ████████╗"
+  echo "    ██╔════╝██║██║     ██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝"
+  echo "    █████╗  ██║██║     █████╗  ██████╔╝██║   ██║   ██║   "
+  echo "    ██╔══╝  ██║██║     ██╔══╝  ██╔══██╗██║   ██║   ██║   "
+  echo "    ██║     ██║███████╗███████╗██████╔╝╚██████╔╝   ██║   "
+  echo "    ╚═╝     ╚═╝╚══════╝╚══════╝╚═════╝  ╚═════╝    ╚═╝   "
+  echo -e "${N}"
+  divider
+  echo -e "  ${WH}$1${N}"
+  divider
+  blank
 }
 
-build_amc_command() {
-  local source_path="$1"
-  printf 'filebot -script fn:amc --output "%s" --action duplicate --conflict auto -non-strict --def movieFormat="%s" seriesFormat="%s" "%s"' "$OUTPUT_BASE" "$MOVIE_FORMAT" "$SERIES_FORMAT" "$source_path"
-}
+# ════════════════════════════════════════════════════════════
+#  SETUP & CONFIGURATION
+# ════════════════════════════════════════════════════════════
 
-show_integration_summary() {
-  print_section_header "Current Integration Summary"
-  cat <<SUMMARY
-API Username: ${API_USERNAME:-<unset>}
-API Password: $(mask_secret "$API_PASSWORD")
-API Token:    $(mask_secret "$API_TOKEN")
-Plex URL:     ${PLEX_URL:-<unset>}
-Plex Token:   $(mask_secret "$PLEX_TOKEN")
-
-Directories:
-  FINISHED_DIR: $FINISHED_DIR
-  TEMP_DIR:     $TEMP_DIR
-  WATCH_DIR:    $WATCH_DIR
-  OUTPUT_BASE:  $OUTPUT_BASE
-  MOVIES_DIR:   $MOVIES_DIR
-  SERIES_DIR:   $SERIES_DIR
-  MOVIE_FORMAT: $MOVIE_FORMAT
-  SERIES_FORMAT: $SERIES_FORMAT
-  CLEANUP_DAYS: $CLEANUP_DAYS
-  BBB_URL:      $BBB_TORRENT_URL
-
-qBittorrent:
-  Variant:      ${QBITTORRENT_VARIANT:-<auto>}
-  Mode:         ${QBITTORRENT_MODE:-<auto>}
-  Container:    ${QBITTORRENT_CONTAINER:-<none>}
-  Config path:  ${QB_CONFIG_PATH:-<unset>}
-  Compose file: ${DOCKER_COMPOSE_FILE:-<unset>}
-
-Expected qBittorrent external program hook:
-  $(build_qb_hook_command)
-
-Current AMC command for FINISHED_DIR:
-  $(build_amc_command "$FINISHED_DIR")
-SUMMARY
-}
-
-check_one_dependency() {
-  local command_name="$1"
-  local label="$2"
-  if command -v "$command_name" >/dev/null 2>&1; then
-    printf '[OK]   %s (%s)\n' "$label" "$command_name"
-    return 0
-  fi
-  printf '[MISS] %s (%s)\n' "$label" "$command_name"
-  return 1
-}
-
-check_dependencies() {
-  print_section_header "SETUP: Dependency and Environment Checks"
-  local missing=0
-  check_one_dependency filebot "FileBot" || missing=$((missing + 1))
-  check_one_dependency java "Java" || missing=$((missing + 1))
-  check_one_dependency curl "curl" || missing=$((missing + 1))
-  check_one_dependency docker "Docker" || missing=$((missing + 1))
-  if check_one_dependency docker-compose "docker-compose"; then
-    :
-  elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    echo "[OK]   Docker Compose plugin (docker compose)"
+setup_install_deps() {
+  section_header "SETUP & CONFIGURATION  //  INSTALL DEPENDENCIES"
+  info "Packages: filebot  openjdk-17-jre  curl"
+  blank
+  confirm "Run apt update + install?" || return
+  blank
+  sudo apt update && sudo apt upgrade -y
+  sudo apt install -y filebot openjdk-17-jre curl
+  blank
+  if command -v filebot &>/dev/null; then
+    ok "filebot $(filebot --version 2>/dev/null | head -1)"
   else
-    echo "[MISS] Docker Compose plugin not available"
-    missing=$((missing + 1))
+    fail "filebot not found — check your apt sources"
   fi
-  check_one_dependency qbittorrent "qBittorrent GUI" || true
-  check_one_dependency qbittorrent-nox "qBittorrent Nox" || true
-  check_one_dependency transmission-cli "transmission-cli" || missing=$((missing + 1))
-
-  echo
-  echo "Common shell utilities:"
-  local util
-  local util_missing=0
-  for util in bash awk sed grep find sort cut tr head tail xargs df du stat chmod mkdir realpath; do
-    if command -v "$util" >/dev/null 2>&1; then
-      printf '  [OK]   %s\n' "$util"
-    else
-      printf '  [MISS] %s\n' "$util"
-      util_missing=$((util_missing + 1))
-    fi
-  done
-  missing=$((missing + util_missing))
-
-  echo
-  if [ "$missing" -eq 0 ]; then
-    echo "Environment looks ready."
-  else
-    echo "Missing checks: $missing (review above)."
-    echo "Install guidance (Debian/Ubuntu):"
-    echo "  sudo apt-get update"
-    echo "  sudo apt-get install -y filebot default-jre curl docker.io docker-compose qbittorrent qbittorrent-nox transmission-cli"
-  fi
+  pause
 }
 
-detect_qbittorrent_local() {
-  local detected=""
-  if pgrep -x qbittorrent >/dev/null 2>&1 || command -v qbittorrent >/dev/null 2>&1; then
-    detected="qbittorrent"
-  fi
-  if pgrep -x qbittorrent-nox >/dev/null 2>&1 || command -v qbittorrent-nox >/dev/null 2>&1; then
-    detected="${detected:+$detected,}qbittorrent-nox"
-  fi
-  echo "$detected"
-}
-
-find_qbittorrent_containers() {
-  if ! command -v docker >/dev/null 2>&1; then
-    return 0
-  fi
-  docker ps --format '{{.Names}}|{{.Image}}' 2>/dev/null | awk -F'|' 'tolower($2) ~ /qbittorrent|qbit/ {print $1}'
-}
-
-inspect_container_mounts() {
-  local container_name="$1"
-  if ! command -v docker >/dev/null 2>&1; then
-    return 0
-  fi
-  docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$container_name" 2>/dev/null
-}
-
-discover_likely_paths() {
-  local discovered_finished=""
-  local discovered_temp=""
-  local discovered_watch=""
-  local discovered_config=""
-
-  if [ -d "$HOME/Downloads" ]; then
-    discovered_finished="${HOME}/Downloads/finished"
-    discovered_temp="${HOME}/Downloads/incomplete"
-    discovered_watch="${HOME}/Downloads/watch"
-  fi
-
-  local container
-  while IFS= read -r container; do
-    [ -z "$container" ] && continue
-    local mounts
-    mounts="$(inspect_container_mounts "$container")"
-    [ -z "$mounts" ] && continue
-
-    if [ -z "$discovered_config" ]; then
-      discovered_config="$(printf '%s\n' "$mounts" | awk '/-> \/config/ {print $1; exit}')"
-    fi
-    if [ -z "$discovered_finished" ]; then
-      discovered_finished="$(printf '%s\n' "$mounts" | awk 'tolower($0) ~ /complete|finished|downloads/ {print $1; exit}')"
-    fi
-    if [ -z "$discovered_temp" ]; then
-      discovered_temp="$(printf '%s\n' "$mounts" | awk 'tolower($0) ~ /incomplete|temp/ {print $1; exit}')"
-    fi
-    if [ -z "$discovered_watch" ]; then
-      discovered_watch="$(printf '%s\n' "$mounts" | awk 'tolower($0) ~ /watch/ {print $1; exit}')"
-    fi
-  done < <(find_qbittorrent_containers)
-
-  [ -n "$discovered_finished" ] && FINISHED_DIR="$discovered_finished"
-  [ -n "$discovered_temp" ] && TEMP_DIR="$discovered_temp"
-  [ -n "$discovered_watch" ] && WATCH_DIR="$discovered_watch"
-  if [ -n "$discovered_config" ]; then
-    QB_CONFIG_PATH="$discovered_config/qBittorrent/qBittorrent.conf"
-  fi
-
-  LAST_DISCOVERED_PATHS="finished=$discovered_finished;temp=$discovered_temp;watch=$discovered_watch;config=$discovered_config"
-}
-
-first_setup_flow() {
-  print_section_header "SETUP: First-time discovery and mapping"
-  discover_likely_paths
-
-  echo "Discovered hints: ${LAST_DISCOVERED_PATHS:-none}"
-  echo
-
-  FINISHED_DIR="$(prompt_with_default "FINISHED_DIR" "$FINISHED_DIR")"
-  TEMP_DIR="$(prompt_with_default "TEMP_DIR" "$TEMP_DIR")"
-  WATCH_DIR="$(prompt_with_default "WATCH_DIR" "$WATCH_DIR")"
-  OUTPUT_BASE="$(prompt_with_default "OUTPUT_BASE" "$OUTPUT_BASE")"
-  MOVIES_DIR="$(prompt_with_default "MOVIES_DIR" "$MOVIES_DIR")"
-  SERIES_DIR="$(prompt_with_default "SERIES_DIR" "$SERIES_DIR")"
-
-  local local_detected
-  local_detected="$(detect_qbittorrent_local)"
-  if [ -n "$local_detected" ]; then
-    QBITTORRENT_MODE="native"
-    QBITTORRENT_VARIANT="$local_detected"
-  fi
-
-  local first_container
-  first_container="$(find_qbittorrent_containers | head -n 1)"
-  if [ -n "$first_container" ]; then
-    QBITTORRENT_MODE="docker"
-    QBITTORRENT_CONTAINER="$first_container"
-  fi
-
-  QB_CONFIG_PATH="$(prompt_with_default "qBittorrent config path" "$QB_CONFIG_PATH")"
-  QBITTORRENT_COMPLETION_HOOK="$(build_qb_hook_command)"
+setup_configure_dirs() {
+  section_header "SETUP & CONFIGURATION  //  DIRECTORIES"
+  info "Press Enter to keep current value"
+  blank
+  prompt_input "Source (finished)" "$FINISHED_DIR";  FINISHED_DIR="$REPLY"
+  prompt_input "Source (temp)"     "$TEMP_DIR";      TEMP_DIR="$REPLY"
+  prompt_input "Output base"       "$OUTPUT_BASE";   OUTPUT_BASE="$REPLY"
+  prompt_input "Movies dir"        "$MOVIES_DIR";    MOVIES_DIR="$REPLY"
+  prompt_input "TV Shows dir"      "$SERIES_DIR";    SERIES_DIR="$REPLY"
+  mkdir -p "$MOVIES_DIR" "$SERIES_DIR" 2>/dev/null
   save_config
-  show_integration_summary
-  pause_prompt
+  blank
+  ok "Saved → $ENV_FILE"
+  pause
 }
 
-configure_api_credentials() {
-  print_section_header "CONFIGURATION: API Credentials"
-  API_USERNAME="$(prompt_with_default "API username" "$API_USERNAME")"
-  read -r -p "API password [hidden, leave blank to keep current]: " -s new_password
-  echo
-  if [ -n "$new_password" ]; then
-    API_PASSWORD="$new_password"
-  fi
-  read -r -p "API token [hidden, leave blank to keep current]: " -s new_token
-  echo
-  if [ -n "$new_token" ]; then
-    API_TOKEN="$new_token"
-  fi
-  read -r -p "Plex token [hidden, leave blank to keep current]: " -s new_plex
-  echo
-  if [ -n "$new_plex" ]; then
-    PLEX_TOKEN="$new_plex"
-  fi
-  PLEX_URL="$(prompt_with_default "Plex identity URL" "$PLEX_URL")"
-  save_config
-  show_integration_summary
-  pause_prompt
-}
+setup_configure_creds() {
+  section_header "SETUP & CONFIGURATION  //  API CREDENTIALS"
+  info "Leave blank to keep existing value"
+  blank
 
-configure_directories() {
-  print_section_header "CONFIGURATION: Directory Paths"
-  FINISHED_DIR="$(prompt_with_default "FINISHED_DIR" "$FINISHED_DIR")"
-  TEMP_DIR="$(prompt_with_default "TEMP_DIR" "$TEMP_DIR")"
-  WATCH_DIR="$(prompt_with_default "WATCH_DIR" "$WATCH_DIR")"
-  OUTPUT_BASE="$(prompt_with_default "OUTPUT_BASE" "$OUTPUT_BASE")"
-  MOVIES_DIR="$(prompt_with_default "MOVIES_DIR" "$MOVIES_DIR")"
-  SERIES_DIR="$(prompt_with_default "SERIES_DIR" "$SERIES_DIR")"
-  save_config
-  show_integration_summary
-  pause_prompt
-}
+  echo -e "  ${WH}PLEX${N}"
+  prompt_input  "Host" "$PLEX_HOST";  PLEX_HOST="$REPLY"
+  prompt_secret "Token";              [[ -n "$REPLY" ]] && PLEX_TOKEN="$REPLY"
+  blank
 
-configure_processing_defaults() {
-  print_section_header "CONFIGURATION: Processing Defaults"
-  MOVIE_FORMAT="$(prompt_with_default "Movie format" "$MOVIE_FORMAT")"
-  SERIES_FORMAT="$(prompt_with_default "Series format" "$SERIES_FORMAT")"
-  CLEANUP_DAYS="$(prompt_with_default "Cleanup days threshold" "$CLEANUP_DAYS")"
-  BBB_TORRENT_URL="$(prompt_with_default "BBB torrent URL" "$BBB_TORRENT_URL")"
-  save_config
-  show_integration_summary
-  pause_prompt
-}
+  echo -e "  ${WH}GMAIL${N}"
+  prompt_input  "Address"      "$GMAIL_USER"; GMAIL_USER="$REPLY"
+  prompt_secret "App password";               [[ -n "$REPLY" ]] && GMAIL_PASS="$REPLY"
+  blank
 
-display_qb_discovery() {
-  print_section_header "SETUP: qBittorrent Native + Docker Discovery"
-  local local_detected
-  local_detected="$(detect_qbittorrent_local)"
-  if [ -n "$local_detected" ]; then
-    echo "Local qBittorrent detected: $local_detected"
-  else
-    echo "Local qBittorrent binaries/processes not detected."
-  fi
-
-  local containers
-  containers="$(find_qbittorrent_containers)"
-  if [ -n "$containers" ]; then
-    echo
-    echo "Likely qBittorrent Docker containers:"
-    echo "$containers"
-    echo
-    local c
-    while IFS= read -r c; do
-      [ -z "$c" ] && continue
-      echo "Mounts for container $c:"
-      inspect_container_mounts "$c" | sed 's/^/  /'
-    done <<< "$containers"
-  else
-    echo
-    echo "No likely qBittorrent Docker containers detected."
-  fi
-
-  echo
-  discover_likely_paths
-  echo "Path hints updated: ${LAST_DISCOVERED_PATHS:-none}"
-  save_config
-  pause_prompt
-}
-
-install_hook_guidance() {
-  print_section_header "SETUP: Install qBittorrent Completion Hook"
-  local cmd
-  cmd="$(build_qb_hook_command)"
-
-  echo "Use this command in qBittorrent -> Downloads -> Run external program on torrent completion:"
-  echo "  $cmd"
-  echo
-  QBITTORRENT_COMPLETION_HOOK="$cmd"
-
-  if [ -n "$QB_CONFIG_PATH" ] && [ -f "$QB_CONFIG_PATH" ]; then
-    echo "Detected config file: $QB_CONFIG_PATH"
-    if grep -Fq "$cmd" "$QB_CONFIG_PATH"; then
-      echo "Hook already configured with current script path."
-    else
-      echo "Hook not found in config."
-      read -r -p "Attempt safe in-file update for Program line? [y/N]: " answer
-      if [[ "$answer" =~ ^[Yy]$ ]]; then
-        local backup_path="$QB_CONFIG_PATH.bak.$(date +%s)"
-        if ! cp "$QB_CONFIG_PATH" "$backup_path"; then
-          echo "Failed to create backup at $backup_path"
-          pause_prompt
-          return
-        fi
-        echo "Backup created at: $backup_path"
-        awk -v cmd="$cmd" '
-          BEGIN { has_program=0; has_toggle=0 }
-          /^Downloads\\Program=/ { print "Downloads\\Program=" cmd; has_program=1; next }
-          /^Downloads\\RunExternalProgram=/ { print "Downloads\\RunExternalProgram=true"; has_toggle=1; next }
-          { print }
-          END {
-            if (!has_program) print "Downloads\\Program=" cmd
-            if (!has_toggle) print "Downloads\\RunExternalProgram=true"
-          }
-        ' "$QB_CONFIG_PATH" > "$QB_CONFIG_PATH.tmp" && mv "$QB_CONFIG_PATH.tmp" "$QB_CONFIG_PATH"
-        echo "Updated config. Restart qBittorrent to apply."
-      fi
-    fi
-  else
-    echo "qBittorrent config not found at QB_CONFIG_PATH. Manual update may be required."
-  fi
-
-  if [ -n "$DOCKER_COMPOSE_FILE" ] && [ -f "$DOCKER_COMPOSE_FILE" ]; then
-    echo
-    echo "Compose file provided: $DOCKER_COMPOSE_FILE"
-    grep -nE "qbit|qbittorrent|volumes?|downloads|watch|config" "$DOCKER_COMPOSE_FILE" || true
-  fi
+  echo -e "  ${WH}PUSHOVER${N}"
+  prompt_secret "User key";   [[ -n "$REPLY" ]] && PUSHOVER_USER="$REPLY"
+  prompt_secret "API token";  [[ -n "$REPLY" ]] && PUSHOVER_TOKEN="$REPLY"
 
   save_config
-  show_integration_summary
-  pause_prompt
+  blank
+  ok "Credentials saved → $ENV_FILE (chmod 600)"
+  pause
 }
 
-verify_hook_setup() {
-  print_section_header "SETUP: Verify qBittorrent Hook"
-  local expected
-  expected="$(build_qb_hook_command)"
-  echo "Expected hook command:"
-  echo "  $expected"
-  echo
-
-  local verified=0
-  if [ -n "$QB_CONFIG_PATH" ] && [ -f "$QB_CONFIG_PATH" ]; then
-    echo "Inspecting: $QB_CONFIG_PATH"
-    local current
-    current="$(grep '^Downloads\\Program=' "$QB_CONFIG_PATH" | head -n 1 | cut -d'=' -f2-)"
-    echo "Current configured Program: ${current:-<unset>}"
-    if [ "$current" = "$expected" ]; then
-      echo "[OK] Script path in qBittorrent hook matches current script path."
-      verified=1
-    else
-      echo "[WARN] Script path mismatch."
-    fi
-  else
-    echo "qBittorrent config file unavailable for direct verification."
-  fi
-
-  if [ "$verified" -eq 0 ]; then
-    echo
-    echo "Fallback guidance:"
-    echo "1) Open qBittorrent settings"
-    echo "2) Set completion hook to exactly:"
-    echo "   $expected"
-    echo "3) Save and re-check from this menu"
-  fi
-
-  pause_prompt
+setup_show_command() {
+  local mfmt="$MOVIES_DIR/{n} ({y})"
+  local sfmt="$SERIES_DIR/{n}/{'Season '+s}/{n} - {s00e00}"
+  section_header "SETUP & CONFIGURATION  //  CURRENT AMC COMMAND"
+  echo -e "  ${GR}filebot${N} ${CY}-script${N} fn:amc \\\n    ${CY}--output${N}    \"$OUTPUT_BASE\" \\\n    ${CY}--action${N}    copy \\\n    ${CY}-non-strict${N} \\\n    ${CY}--def${N} \"ut_kind=multi\" \\\n    ${CY}--def${N} \"ut_dir=$FINISHED_DIR\" \\\n    ${CY}--def${N} \"movieFormat=$mfmt\" \\\n    ${CY}--def${N} \"seriesFormat=$sfmt\" \\\n    ${CY}--def${N} plex=\"$PLEX_HOST:${PLEX_TOKEN:0:6}***\" \\\n    ${CY}--def${N} pushover=\"${PUSHOVER_USER:0:6}***:${PUSHOVER_TOKEN:0:6}***\" \\\n    ${CY}--def${N} gmail=\"$GMAIL_USER:***\""
+  blank
+  echo -e "  ${DI}Secrets truncated — full values used at runtime${N}"
+  pause
 }
 
-show_qb_optimization_help() {
-  print_section_header "SETUP: qBittorrent Optimization Assistance"
-  echo "Path consistency checks:"
-  for path_var in FINISHED_DIR TEMP_DIR WATCH_DIR OUTPUT_BASE MOVIES_DIR SERIES_DIR; do
-    local path_value=""
-    path_value="${!path_var}"
-    if [ -d "$path_value" ]; then
-      echo "  [OK] $path_var exists: $path_value"
-    else
-      echo "  [WARN] $path_var missing: $path_value"
-    fi
-  done
+# ════════════════════════════════════════════════════════════
+#  CORE PROCESSING
+# ════════════════════════════════════════════════════════════
 
-  echo
-  local containers
-  containers="$(find_qbittorrent_containers)"
-  if [ -n "$containers" ]; then
-    echo "Docker container mount mapping suggestions:"
-    local c
-    while IFS= read -r c; do
-      [ -z "$c" ] && continue
-      echo "- $c"
-      inspect_container_mounts "$c" | sed 's/^/    /'
-    done <<< "$containers"
-    echo "Suggestion: ensure host FINISHED_DIR/TEMP_DIR paths map to the same paths FileBot can access."
-  else
-    echo "No qBittorrent Docker containers detected to inspect."
-  fi
-
-  if [ -n "$DOCKER_COMPOSE_FILE" ] && [ -f "$DOCKER_COMPOSE_FILE" ]; then
-    echo
-    echo "Compose inspection hints from: $DOCKER_COMPOSE_FILE"
-    grep -nE 'qbit|qbittorrent|volumes?|downloads?|watch|config' "$DOCKER_COMPOSE_FILE" || true
-  fi
-
-  pause_prompt
-}
-
-ensure_dirs() {
-  mkdir -p "$FINISHED_DIR" "$TEMP_DIR" "$WATCH_DIR" "$OUTPUT_BASE" "$MOVIES_DIR" "$SERIES_DIR" "$LOG_DIR"
-}
-
-run_filebot_on_path() {
-  local target_path="$1"
-  local mode="$2"
-  local normalized
-  normalized="$(normalize_path "$target_path")"
-
-  if [ ! -e "$normalized" ]; then
-    echo "Target does not exist: $normalized"
-    log_msg "ERROR" "Missing target path for processing: $normalized"
+_validate() {
+  local errors=()
+  [[ -z "$PLEX_TOKEN" ]]     && errors+=("Plex token not set")
+  [[ -z "$GMAIL_USER" ]]     && errors+=("Gmail user not set")
+  [[ -z "$GMAIL_PASS" ]]     && errors+=("Gmail password not set")
+  [[ -z "$PUSHOVER_USER" ]]  && errors+=("Pushover user key not set")
+  [[ -z "$PUSHOVER_TOKEN" ]] && errors+=("Pushover API token not set")
+  [[ ! -d "$FINISHED_DIR" ]] && errors+=("Source dir missing: $FINISHED_DIR")
+  if [[ ${#errors[@]} -gt 0 ]]; then
+    for e in "${errors[@]}"; do fail "$e"; done
+    pause
     return 1
   fi
-
-  local action_mode="duplicate"
-  local conflict_mode="auto"
-  if [ "$mode" = "dry" ]; then
-    action_mode="test"
-  elif [ "$mode" = "force" ]; then
-    conflict_mode="override"
-  fi
-
-  local -a amc_cmd=(
-    filebot
-    -script fn:amc
-    --output "$OUTPUT_BASE"
-    --action "$action_mode"
-    --conflict "$conflict_mode"
-    -non-strict
-    --def "movieFormat=$MOVIE_FORMAT"
-    "seriesFormat=$SERIES_FORMAT"
-    "$normalized"
-  )
-
-  echo "Running FileBot mode=$mode path=$normalized"
-  log_msg "INFO" "Running FileBot mode=$mode path=$normalized"
-
-  echo "Command:"
-  printf '  %q ' "${amc_cmd[@]}"
-  echo
-
-  if command -v filebot >/dev/null 2>&1; then
-    if "${amc_cmd[@]}"; then
-      log_msg "INFO" "FILEBOT_RESULT success path=$normalized mode=$mode"
-      printf '%s | success | %s | %s\n' "$(date '+%F %T')" "$mode" "$normalized" >> "$IMPORT_REPORT_FILE"
-      echo "FileBot completed successfully."
-      return 0
-    fi
-    log_msg "ERROR" "FILEBOT_RESULT failure path=$normalized mode=$mode"
-    printf '%s | failure | %s | %s\n' "$(date '+%F %T')" "$mode" "$normalized" >> "$IMPORT_REPORT_FILE"
-    echo "FileBot failed."
-    return 1
-  fi
-
-  echo "FileBot is not installed."
-  log_msg "ERROR" "filebot binary missing"
-  return 1
+  return 0
 }
 
-run_filebot_finished() {
-  print_section_header "Processing: Run FileBot (Finished)"
-  run_filebot_on_path "$FINISHED_DIR" "normal"
-  pause_prompt
+_run_filebot() {
+  local extra_flags="$1"
+  local source_dir="$2"
+  local mfmt="$MOVIES_DIR/{n} ({y})"
+  local sfmt="$SERIES_DIR/{n}/{'Season '+s}/{n} - {s00e00}"
+
+  [[ -z "$source_dir" ]] && source_dir="$FINISHED_DIR"
+
+  # shellcheck disable=SC2086
+  filebot -script fn:amc \
+    --output "$OUTPUT_BASE" \
+    --action copy \
+    -non-strict \
+    $extra_flags \
+    --def "ut_kind=multi" \
+    --def "ut_dir=$source_dir" \
+    --def "movieFormat=$mfmt" \
+    --def "seriesFormat=$sfmt" \
+    --def plex="$PLEX_HOST:$PLEX_TOKEN" \
+    --def pushover="$PUSHOVER_USER:$PUSHOVER_TOKEN" \
+    --def gmail="$GMAIL_USER:$GMAIL_PASS"
 }
 
-run_filebot_temp() {
-  print_section_header "Processing: Run FileBot (Temp)"
-  run_filebot_on_path "$TEMP_DIR" "normal"
-  pause_prompt
+core_run_finished() {
+  section_header "CORE PROCESSING  //  RUN MOVE (FINISHED)"
+  _validate || return
+  info "Source: $FINISHED_DIR"
+  info "Output: $OUTPUT_BASE"
+  blank
+  confirm "Execute FileBot AMC now?" || return
+  blank
+  _run_filebot "" "$FINISHED_DIR"
+  local c=$?
+  blank
+  [[ $c -eq 0 ]] && ok "Completed (exit $c)" || fail "Exited with code $c"
+  pause
 }
 
-run_filebot_custom() {
-  print_section_header "Processing: Custom Path"
-  read -r -p "Enter path to process: " custom_path
-  [ -z "$custom_path" ] && custom_path="$FINISHED_DIR"
-  run_filebot_on_path "$custom_path" "normal"
-  pause_prompt
+core_run_temp() {
+  section_header "CORE PROCESSING  //  RUN MOVE (TEMP)"
+  _validate || return
+  [[ ! -d "$TEMP_DIR" ]] && { fail "Temp source dir missing: $TEMP_DIR"; pause; return; }
+  info "Source: $TEMP_DIR"
+  info "Output: $OUTPUT_BASE"
+  blank
+  confirm "Run FileBot on $TEMP_DIR?" || return
+  blank
+  _run_filebot "" "$TEMP_DIR"
+  local c=$?
+  blank
+  [[ $c -eq 0 ]] && ok "Completed (exit $c)" || fail "Exited with code $c"
+  pause
 }
 
-run_filebot_force() {
-  print_section_header "Processing: Forced Run"
-  read -r -p "Enter path to force process [$FINISHED_DIR]: " custom_path
-  [ -z "$custom_path" ] && custom_path="$FINISHED_DIR"
-  run_filebot_on_path "$custom_path" "force"
-  pause_prompt
+core_run_force() {
+  section_header "CORE PROCESSING  //  FORCED RUN (IGNORE HISTORY)"
+  _validate || return
+  warn "This ignores AMC history — files already moved may be re-processed"
+  blank
+  confirm "Continue?" || return
+  blank
+  _run_filebot "--def ignoreHistory=y" "$FINISHED_DIR"
+  local c=$?
+  blank
+  [[ $c -eq 0 ]] && ok "Completed (exit $c)" || fail "Exited with code $c"
+  pause
 }
 
-run_filebot_dry() {
-  print_section_header "Processing: Dry Run"
-  read -r -p "Enter path to dry-run [$FINISHED_DIR]: " custom_path
-  [ -z "$custom_path" ] && custom_path="$FINISHED_DIR"
-  run_filebot_on_path "$custom_path" "dry"
-  echo "Dry-run summary (recent):"
-  tail -n 5 "$IMPORT_REPORT_FILE" 2>/dev/null || true
-  pause_prompt
+core_run_dry() {
+  section_header "CORE PROCESSING  //  SIMULATION MODE (DRY RUN)"
+  _validate || return
+  info "No files will be moved — output only"
+  blank
+  confirm "Run simulation?" || return
+  blank
+  _run_filebot "--action test" "$FINISHED_DIR"
+  local c=$?
+  blank
+  [[ $c -eq 0 ]] && ok "Simulation complete (exit $c)" || fail "Exited with code $c"
+  pause
 }
 
-bbb_test_qbittorrent() {
-  print_section_header "Testing: BBB via qBittorrent"
-  local local_detected
-  local_detected="$(detect_qbittorrent_local)"
-  if [ -n "$local_detected" ]; then
-    echo "Detected local variant(s): $local_detected"
-  else
-    echo "No local qBittorrent process detected."
-  fi
+# ════════════════════════════════════════════════════════════
+#  SYSTEM & MAINTENANCE
+# ════════════════════════════════════════════════════════════
 
-  if [ -n "$QBITTORRENT_CONTAINER" ]; then
-    echo "Configured container: $QBITTORRENT_CONTAINER"
-  fi
-
-  echo
-  echo "Manual helper steps:"
-  echo "1) Add Big Buck Bunny torrent in qBittorrent"
-  echo "2) Ensure completed content lands in FINISHED_DIR"
-  echo "3) This script can process that completed item"
-  read -r -p "Enter completed path to process now (blank to skip): " completed_path
-  if [ -n "$completed_path" ]; then
-    run_filebot_on_path "$completed_path" "normal"
-  fi
-  pause_prompt
-}
-
-bbb_test_transmission_cli() {
-  print_section_header "Testing: BBB via transmission-cli"
-  if ! command -v transmission-cli >/dev/null 2>&1; then
-    echo "transmission-cli is not installed."
-    pause_prompt
+maint_view_logs() {
+  section_header "SYSTEM & MAINTENANCE  //  VIEW LOGS"
+  local log_dir="/var/log/filebot"
+  if [[ ! -d "$log_dir" ]]; then
+    warn "Log directory not found: $log_dir"
+    pause
     return
   fi
-
-  local torrent_url="$BBB_TORRENT_URL"
-  local target_dir="$TEMP_DIR/bbb-test"
-  mkdir -p "$target_dir"
-
-  echo "Downloading Big Buck Bunny test torrent via transmission-cli..."
-  echo "URL: $torrent_url"
-  echo "Target: $target_dir"
-  if transmission-cli "$torrent_url" -w "$target_dir"; then
-    echo "Download complete; running FileBot against test directory."
-    run_filebot_on_path "$target_dir" "normal"
-  else
-    echo "transmission-cli download failed."
+  info "Recent log files:"
+  blank
+  ls -lt "$log_dir"/*.log 2>/dev/null | head -10
+  blank
+  local latest
+  latest=$(ls -t "$log_dir"/*.log 2>/dev/null | head -1)
+  if [[ -n "$latest" ]]; then
+    confirm "Tail latest log ($latest)?" && tail -40 "$latest"
   fi
-
-  read -r -p "Delete BBB test files at $target_dir ? [y/N]: " cleanup
-  if [[ "$cleanup" =~ ^[Yy]$ ]]; then
-    rm -rf "$target_dir"
-    echo "Removed test files."
-  fi
-  pause_prompt
+  pause
 }
 
-show_logs() {
-  print_section_header "Maintenance: View Logs"
-  if [ ! -f "$LOG_FILE" ]; then
-    echo "No log file yet: $LOG_FILE"
-  else
-    tail -n 100 "$LOG_FILE"
-  fi
-  pause_prompt
+maint_scrub_junk() {
+  section_header "SYSTEM & MAINTENANCE  //  SCRUB JUNK FILES"
+  info "Removes .nfo  .txt  .jpg  .jpeg  .png  .sfv  .nzb  sample files from output"
+  blank
+  confirm "Continue?" || return
+  blank
+  find "$OUTPUT_BASE" \( \
+    -iname "*.nfo" -o \
+    -iname "*.txt" -o \
+    -iname "*.jpg" -o \
+    -iname "*.jpeg" -o \
+    -iname "*.png" -o \
+    -iname "*.sfv" -o \
+    -iname "*.nzb" -o \
+    -iname "*sample*" \
+  \) -delete \
+    && ok "Junk files removed from $OUTPUT_BASE" \
+    || fail "Scrub encountered errors"
+  pause
 }
 
-search_logs() {
-  print_section_header "Maintenance: Filter/Search Logs"
-  if [ ! -f "$LOG_FILE" ]; then
-    echo "No log file yet."
-    pause_prompt
+maint_wipe_history() {
+  section_header "SYSTEM & MAINTENANCE  //  WIPE AMC HISTORY"
+  warn "This clears FileBot's record of processed files"
+  warn "Re-running AMC may duplicate already-moved files"
+  blank
+  confirm "Wipe AMC history?" || return
+  blank
+  filebot -script fn:cleaner 2>/dev/null \
+    && ok "AMC history cleared" \
+    || {
+      info "Trying manual clear..."
+      rm -f "$HOME/.filebot/history.xml" \
+        && ok "history.xml removed" \
+        || fail "Could not locate history file"
+    }
+  pause
+}
+
+maint_empty_finished() {
+  section_header "SYSTEM & MAINTENANCE  //  EMPTY FINISHED/TEMP"
+  warn "This permanently deletes contents of:"
+  echo "    $FINISHED_DIR"
+  echo "    $TEMP_DIR"
+  blank
+  confirm "Delete ALL files in finished and temp dirs?" || return
+  blank
+
+  local failed=0
+
+  if [[ -d "$FINISHED_DIR" ]]; then
+    rm -rf "${FINISHED_DIR:?}"/* || failed=1
+  else
+    warn "Finished dir not found: $FINISHED_DIR"
+  fi
+
+  if [[ -d "$TEMP_DIR" ]]; then
+    rm -rf "${TEMP_DIR:?}"/* || failed=1
+  else
+    warn "Temp dir not found: $TEMP_DIR"
+  fi
+
+  [[ $failed -eq 0 ]] && ok "Finished/temp dirs emptied" || fail "Delete failed"
+  pause
+}
+
+maint_upgrade() {
+  section_header "SYSTEM & MAINTENANCE  //  SYSTEM UPGRADE & RE-VERIFY DEPS"
+  info "apt update / upgrade / autoremove + verify filebot + java"
+  blank
+  confirm "Continue?" || return
+  blank
+  sudo apt update && sudo apt upgrade -y
+  sudo apt autoremove -y && sudo apt autoclean
+  blank
+  command -v filebot &>/dev/null \
+    && ok "filebot:  $(filebot --version 2>/dev/null | head -1)" \
+    || fail "filebot not found"
+  command -v java &>/dev/null \
+    && ok "java:     $(java -version 2>&1 | head -1)" \
+    || fail "java not found"
+  pause
+}
+
+# ════════════════════════════════════════════════════════════
+#  ALERTS & TESTING
+# ════════════════════════════════════════════════════════════
+
+alerts_test_notifications() {
+  section_header "ALERTS & TESTING  //  TEST NOTIFICATIONS"
+  info "Sends a test ping via Pushover"
+  blank
+  [[ -z "$PUSHOVER_USER" || -z "$PUSHOVER_TOKEN" ]] \
+    && { warn "Pushover credentials not set — skipping"; } \
+    || {
+      confirm "Send Pushover test?" && \
+        curl -s \
+          --form-string "token=$PUSHOVER_TOKEN" \
+          --form-string "user=$PUSHOVER_USER" \
+          --form-string "message=FileBot Manager: test notification" \
+          https://api.pushover.net/1/messages.json > /dev/null \
+        && ok "Pushover sent" || fail "Pushover failed"
+    }
+  blank
+  pause
+}
+
+alerts_test_cycle() {
+  section_header "ALERTS & TESTING  //  RUN TEST CYCLE"
+  _validate || return
+  warn "Dry-run + notification test combined"
+  blank
+  confirm "Continue?" || return
+  blank
+  _run_filebot "--action test" "$FINISHED_DIR"
+  local c=$?
+  blank
+  [[ $c -eq 0 ]] && ok "Test cycle complete" || fail "Test cycle exited $c"
+  pause
+}
+
+alerts_backup() {
+  section_header "ALERTS & TESTING  //  TRIGGER CONFIGURATION BACKUP"
+  local ts
+  ts=$(date +%F_%H-%M-%S)
+  local dest="$SCRIPT_DIR/.env.backup.$ts"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    fail "No .env found — save config in Setup first"
+    pause
     return
   fi
-  read -r -p "Search pattern: " pattern
-  if [ -z "$pattern" ]; then
-    echo "Pattern is required."
-  else
-    grep -n --color=never -i "$pattern" "$LOG_FILE" || true
-  fi
-  pause_prompt
+  info "Destination: $dest"
+  blank
+  confirm "Back up now?" || return
+  cp "$ENV_FILE" "$dest" && chmod 600 "$dest" \
+    && ok "Backed up → $dest" || fail "Backup failed"
+  pause
 }
 
-show_recent_import_reports() {
-  print_section_header "Maintenance: Recent Import Reports"
-  if [ -f "$IMPORT_REPORT_FILE" ]; then
-    tail -n 30 "$IMPORT_REPORT_FILE"
-  else
-    echo "No import report yet."
-  fi
-  pause_prompt
-}
+# ════════════════════════════════════════════════════════════
+#  MAIN MENU
+# ════════════════════════════════════════════════════════════
 
-cleanup_preview() {
-  print_section_header "Maintenance: Cleanup Preview"
-  echo "Preview (no deletion yet):"
-  echo "Candidate files in TEMP_DIR older than $CLEANUP_DAYS days:"
-  find "$TEMP_DIR" -type f -mtime +"$CLEANUP_DAYS" 2>/dev/null
-  read -r -p "Delete listed old files now? [y/N]: " choice
-  if [[ "$choice" =~ ^[Yy]$ ]]; then
-    find "$TEMP_DIR" -type f -mtime +"$CLEANUP_DAYS" -delete 2>/dev/null
-    echo "Old files deleted from TEMP_DIR."
-  fi
-  pause_prompt
-}
-
-scrub_junk_files() {
-  print_section_header "Maintenance: Junk Scrubber"
-  local junk_patterns=('*.nfo' '*.txt' '*.sfv' '*.url' '*.lnk' '*.DS_Store' 'Thumbs.db')
-  local base
-  for base in "$TEMP_DIR" "$FINISHED_DIR"; do
-    [ -d "$base" ] || continue
-    echo "Scanning $base"
-    local pattern
-    for pattern in "${junk_patterns[@]}"; do
-      find "$base" -type f -name "$pattern" 2>/dev/null
-    done
-  done
-  read -r -p "Delete listed junk files? [y/N]: " do_delete
-  if [[ "$do_delete" =~ ^[Yy]$ ]]; then
-    for base in "$TEMP_DIR" "$FINISHED_DIR"; do
-      [ -d "$base" ] || continue
-      local pattern
-      for pattern in "${junk_patterns[@]}"; do
-        find "$base" -type f -name "$pattern" -delete 2>/dev/null
-      done
-    done
-    echo "Junk files removed."
-  fi
-  pause_prompt
-}
-
-check_mount_permissions_disk() {
-  print_section_header "Maintenance: Mount / Permission / Disk Checks"
-  local p
-  for p in "$FINISHED_DIR" "$TEMP_DIR" "$WATCH_DIR" "$OUTPUT_BASE"; do
-    echo "Path: $p"
-    if [ -d "$p" ]; then
-      echo "  Exists: yes"
-      if [ -w "$p" ]; then
-        echo "  Writable: yes"
-      else
-        echo "  Writable: no"
-      fi
-      df -h "$p"
-    else
-      echo "  Exists: no"
-    fi
-    echo
-  done
-  pause_prompt
-}
-
-find_duplicates() {
-  print_section_header "Maintenance: Duplicate Detection"
-  get_file_size() {
-    local file_path="$1"
-    if stat -c %s "$file_path" >/dev/null 2>&1; then
-      stat -c %s "$file_path"
-    else
-      stat -f %z "$file_path" 2>/dev/null
-    fi
-  }
-  local root
-  for root in "$MOVIES_DIR" "$SERIES_DIR"; do
-    [ -d "$root" ] || continue
-    echo "Checking $root"
-    find "$root" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) 2>/dev/null | while IFS= read -r media_file; do
-      local size
-      size="$(get_file_size "$media_file")"
-      [ -n "$size" ] || continue
-      printf '%s|%s|%s\n' "$size" "$(basename "$media_file")" "$media_file"
-    done | sort | awk -F'|' '
-      {
-        key = $1 "|" $2
-        count[key]++
-        paths[key] = paths[key] sprintf("    %s\n", $3)
-      }
-      END {
-        for (k in count) {
-          if (count[k] > 1) {
-            split(k, meta, "|")
-            printf("  duplicate candidate (%s bytes, %s):\n%s", meta[1], meta[2], paths[k])
-          }
-        }
-      }
-    '
-  done
-  pause_prompt
-}
-
-show_storage_summary() {
-  print_section_header "Maintenance: Storage Summary"
-  local p
-  for p in "$FINISHED_DIR" "$TEMP_DIR" "$WATCH_DIR" "$OUTPUT_BASE" "$MOVIES_DIR" "$SERIES_DIR"; do
-    if [ -d "$p" ]; then
-      du -sh "$p" 2>/dev/null | awk -v p="$p" '{print p " -> " $1}'
-    else
-      echo "$p -> missing"
-    fi
-  done
-
-  local containers
-  containers="$(find_qbittorrent_containers)"
-  if [ -n "$containers" ]; then
-    echo
-    echo "Docker-exposed mounts:"
-    local c
-    while IFS= read -r c; do
-      [ -z "$c" ] && continue
-      echo "Container: $c"
-      inspect_container_mounts "$c" | sed 's/^/  /'
-    done <<< "$containers"
-  fi
-
-  pause_prompt
-}
-
-test_plex_connectivity() {
-  print_section_header "Maintenance: Plex Connectivity Test"
-  echo "Testing: $PLEX_URL"
-  if [ -n "$PLEX_TOKEN" ]; then
-    if curl -fsS --max-time 10 -H "X-Plex-Token: $PLEX_TOKEN" "$PLEX_URL" >/dev/null; then
-      echo "Plex connectivity: OK"
-    else
-      echo "Plex connectivity: FAILED"
-    fi
-  elif curl -fsS --max-time 10 "$PLEX_URL" >/dev/null; then
-    echo "Plex connectivity: OK"
-  else
-    echo "Plex connectivity: FAILED"
-  fi
-  pause_prompt
-}
-
-configure_qb_settings() {
-  print_section_header "CONFIGURATION: qBittorrent Integration"
-  QBITTORRENT_VARIANT="$(prompt_with_default "qBittorrent variant (qbittorrent/qbittorrent-nox)" "$QBITTORRENT_VARIANT")"
-  QBITTORRENT_MODE="$(prompt_with_default "qBittorrent mode (native/docker)" "$QBITTORRENT_MODE")"
-  QBITTORRENT_CONTAINER="$(prompt_with_default "qBittorrent container name" "$QBITTORRENT_CONTAINER")"
-  QB_CONFIG_PATH="$(prompt_with_default "qBittorrent config path" "$QB_CONFIG_PATH")"
-  DOCKER_COMPOSE_FILE="$(prompt_with_default "Docker compose file path" "$DOCKER_COMPOSE_FILE")"
-  QBITTORRENT_COMPLETION_HOOK="$(build_qb_hook_command)"
-  save_config
-  show_integration_summary
-  pause_prompt
-}
-
-run_auto_filebot() {
-  local location="${1:-}"
-  local name_arg="${2:-}"
-  local file_arg="${3:-}"
-
-  local selected_path=""
-  if [ -n "$location" ] && [ "$location" != "%L" ]; then
-    selected_path="$location"
-  elif [ -n "$file_arg" ] && [ "$file_arg" != "%F" ]; then
-    selected_path="$file_arg"
-  elif [ -n "$name_arg" ] && [ "$name_arg" != "%N" ]; then
-    selected_path="$name_arg"
-  else
-    selected_path="$FINISHED_DIR"
-  fi
-
-  selected_path="$(normalize_path "$selected_path")"
-
-  echo "SnorlaxBot auto mode: processing completed item only"
-  echo "Resolved item path: $selected_path"
-  run_filebot_on_path "$selected_path" "normal"
-}
-
-show_setup_menu() {
+main_menu() {
   while true; do
-    print_section_header "SETUP"
-    cat <<MENU
-1) First-setup discovery + path mapping
-2) Check dependencies/environment
-3) Discover qBittorrent (native + Docker)
-4) Install/update qBittorrent completion hook
-5) Verify qBittorrent completion hook
-6) qBittorrent optimization assistance
-7) Back
-MENU
-    read -r -p "Choose an option: " choice
+    print_header
+
+    echo -e "  ${WH}SETUP & CONFIGURATION${N}"
+    echo -e "  ${CY}[01]${N} ${GR}Update Environment & Credentials${N}"
+    echo -e "  ${CY}[02]${N} ${GR}Configure Directories${N}"
+    echo -e "  ${CY}[03]${N} ${GR}Show Dynamic AMC FileBot Command${N}"
+    echo -e "  ${CY}[04]${N} ${GR}Install / Re-verify Dependencies${N}"
+    blank
+
+    echo -e "  ${WH}CORE PROCESSING${N}"
+    echo -e "  ${CY}[05]${N} ${GR}Run Move (Finished)${N}"
+    echo -e "  ${CY}[06]${N} ${GR}Run Move (Temp)${N}"
+    echo -e "  ${CY}[07]${N} ${GR}Forced Run (Ignore History)${N}"
+    echo -e "  ${CY}[08]${N} ${GR}Simulation Mode (Dry Run)${N}"
+    blank
+
+    echo -e "  ${WH}SYSTEM & MAINTENANCE${N}"
+    echo -e "  ${CY}[09]${N} ${GR}View Logs${N}"
+    echo -e "  ${CY}[10]${N} ${GR}Scrub Junk Files${N}"
+    echo -e "  ${CY}[11]${N} ${GR}Wipe AMC History${N}"
+    echo -e "  ${CY}[12]${N} ${GR}Empty Finished/TEMP${N}"
+    echo -e "  ${CY}[13]${N} ${YE}SYSTEM UPGRADE & RE-VERIFY DEPS${N}"
+    blank
+
+    echo -e "  ${WH}ALERTS & TESTING${N}"
+    echo -e "  ${CY}[14]${N} ${GR}Test Notifications${N}"
+    echo -e "  ${CY}[15]${N} ${GR}Run Test Cycle${N}"
+    echo -e "  ${CY}[16]${N} ${GR}Trigger Configuration Backup${N}"
+    blank
+
+    echo -e "  ${WH}SYSTEM${N}"
+    echo -e "  ${CY}[00]${N} ${RE}TERMINATE SESSION${N}"
+    blank
+    divider
+    printf "  ${WH}SELECT OPTION:${N} "
+    read -r choice
+
     case "$choice" in
-      1) first_setup_flow ;;
-      2) check_dependencies; pause_prompt ;;
-      3) display_qb_discovery ;;
-      4) install_hook_guidance ;;
-      5) verify_hook_setup ;;
-      6) show_qb_optimization_help ;;
-      7) return ;;
-      *) echo "Invalid option"; pause_prompt ;;
+      01|1) setup_configure_creds ;;
+      02|2) setup_configure_dirs ;;
+      03|3) setup_show_command ;;
+      04|4) setup_install_deps ;;
+      05|5) core_run_finished ;;
+      06|6) core_run_temp ;;
+      07|7) core_run_force ;;
+      08|8) core_run_dry ;;
+      09|9) maint_view_logs ;;
+      10)   maint_scrub_junk ;;
+      11)   maint_wipe_history ;;
+      12)   maint_empty_finished ;;
+      13)   maint_upgrade ;;
+      14)   alerts_test_notifications ;;
+      15)   alerts_test_cycle ;;
+      16)   alerts_backup ;;
+      00|0) break ;;
+      *)    warn "Invalid selection"; pause ;;
     esac
   done
+
+  clear
+  echo -e "${BL}$(printf '═%.0s' {1..70})${N}"
+  echo -e "  ${DI}SESSION TERMINATED${N}"
+  echo -e "${BL}$(printf '═%.0s' {1..70})${N}"
+  echo ""
 }
 
-show_configuration_menu() {
-  while true; do
-    print_section_header "CONFIGURATION"
-    cat <<MENU
-1) Configure API credentials
-2) Configure directory paths
-3) Configure processing defaults
-4) Configure qBittorrent integration
-5) View current integration summary
-6) Back
-MENU
-    read -r -p "Choose an option: " choice
-    case "$choice" in
-      1) configure_api_credentials ;;
-      2) configure_directories ;;
-      3) configure_processing_defaults ;;
-      4) configure_qb_settings ;;
-      5) show_integration_summary; pause_prompt ;;
-      6) return ;;
-      *) echo "Invalid option"; pause_prompt ;;
-    esac
-  done
-}
-
-show_processing_menu() {
-  while true; do
-    print_section_header "PROCESSING"
-    cat <<MENU
-1) Run FileBot (Finished)
-2) Run FileBot (Temp)
-3) Run FileBot (Custom Path)
-4) Run FileBot (Forced)
-5) Run FileBot (Dry Run)
-6) Back
-MENU
-    read -r -p "Choose an option: " choice
-    case "$choice" in
-      1) run_filebot_finished ;;
-      2) run_filebot_temp ;;
-      3) run_filebot_custom ;;
-      4) run_filebot_force ;;
-      5) run_filebot_dry ;;
-      6) return ;;
-      *) echo "Invalid option"; pause_prompt ;;
-    esac
-  done
-}
-
-show_testing_menu() {
-  while true; do
-    print_section_header "INTEGRATION & TESTING"
-    cat <<MENU
-1) BBB Test via qBittorrent
-2) BBB Test via transmission-cli
-3) Verify qBittorrent hook command
-4) Back
-MENU
-    read -r -p "Choose an option: " choice
-    case "$choice" in
-      1) bbb_test_qbittorrent ;;
-      2) bbb_test_transmission_cli ;;
-      3) verify_hook_setup ;;
-      4) return ;;
-      *) echo "Invalid option"; pause_prompt ;;
-    esac
-  done
-}
-
-show_maintenance_menu() {
-  while true; do
-    print_section_header "MAINTENANCE & DIAGNOSTICS"
-    cat <<MENU
-1) View logs
-2) Filter/search logs
-3) Recent import reports
-4) Cleanup preview and optional delete
-5) Junk scrubber
-6) Mount/permission/disk checks
-7) Duplicate detection
-8) Storage summary (host + Docker mappings)
-9) Plex connectivity test
-10) Back
-MENU
-    read -r -p "Choose an option: " choice
-    case "$choice" in
-      1) show_logs ;;
-      2) search_logs ;;
-      3) show_recent_import_reports ;;
-      4) cleanup_preview ;;
-      5) scrub_junk_files ;;
-      6) check_mount_permissions_disk ;;
-      7) find_duplicates ;;
-      8) show_storage_summary ;;
-      9) test_plex_connectivity ;;
-      10) return ;;
-      *) echo "Invalid option"; pause_prompt ;;
-    esac
-  done
-}
-
-show_main_menu() {
-  while true; do
-    print_title_area
-    cat <<MENU
-1) SETUP
-2) CONFIGURATION
-3) PROCESSING
-4) INTEGRATION & TESTING
-5) MAINTENANCE & DIAGNOSTICS
-6) View integration summary
-7) Exit
-MENU
-    read -r -p "Choose an option: " choice
-    case "$choice" in
-      1) show_setup_menu ;;
-      2) show_configuration_menu ;;
-      3) show_processing_menu ;;
-      4) show_testing_menu ;;
-      5) show_maintenance_menu ;;
-      6) show_integration_summary; pause_prompt ;;
-      7) exit 0 ;;
-      *) echo "Invalid option"; pause_prompt ;;
-    esac
-  done
-}
-
-main() {
-  resolve_script_path
-  load_config
-  ensure_dirs
-
-  if [ "${1:-}" = "--auto-filebot" ]; then
-    shift
-    run_auto_filebot "${1:-}" "${2:-}" "${3:-}"
-    exit $?
-  fi
-
-  show_main_menu
-}
-
-main "$@"
+# ════════════════════════════════════════════════════════════
+load_config
+main_menu
