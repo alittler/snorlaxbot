@@ -29,6 +29,10 @@ API_TOKEN=""
 PLEX_URL="http://localhost:32400/identity"
 PLEX_TOKEN=""
 LAST_DISCOVERED_PATHS=""
+MOVIE_FORMAT=""
+SERIES_FORMAT=""
+CLEANUP_DAYS=7
+BBB_TORRENT_URL="https://webtorrent.io/torrents/big-buck-bunny.torrent"
 
 resolve_script_path() {
   local source="${BASH_SOURCE[0]}"
@@ -88,6 +92,10 @@ load_defaults() {
   PLEX_URL="http://localhost:32400/identity"
   PLEX_TOKEN=""
   LAST_DISCOVERED_PATHS=""
+  MOVIE_FORMAT="{n} ({y})"
+  SERIES_FORMAT="{n}/Season {s}/{n} - {s00e00} - {t}"
+  CLEANUP_DAYS=7
+  BBB_TORRENT_URL="https://webtorrent.io/torrents/big-buck-bunny.torrent"
 }
 
 save_config() {
@@ -110,6 +118,10 @@ API_TOKEN=$(escape_for_conf "$API_TOKEN")
 PLEX_URL=$(escape_for_conf "$PLEX_URL")
 PLEX_TOKEN=$(escape_for_conf "$PLEX_TOKEN")
 LAST_DISCOVERED_PATHS=$(escape_for_conf "$LAST_DISCOVERED_PATHS")
+MOVIE_FORMAT=$(escape_for_conf "$MOVIE_FORMAT")
+SERIES_FORMAT=$(escape_for_conf "$SERIES_FORMAT")
+CLEANUP_DAYS=$(escape_for_conf "$CLEANUP_DAYS")
+BBB_TORRENT_URL=$(escape_for_conf "$BBB_TORRENT_URL")
 CFG
   log_msg "INFO" "Configuration saved to $CONFIG_FILE"
 }
@@ -205,7 +217,7 @@ build_qb_hook_command() {
 
 build_amc_command() {
   local source_path="$1"
-  printf 'filebot -script fn:amc --output "%s" --action duplicate --conflict auto -non-strict --def movieFormat="{n} ({y})" seriesFormat="{n}/Season {s}/{n} - {s00e00} - {t}" "%s"' "$OUTPUT_BASE" "$source_path"
+  printf 'filebot -script fn:amc --output "%s" --action duplicate --conflict auto -non-strict --def movieFormat="%s" seriesFormat="%s" "%s"' "$OUTPUT_BASE" "$MOVIE_FORMAT" "$SERIES_FORMAT" "$source_path"
 }
 
 show_integration_summary() {
@@ -224,6 +236,10 @@ Directories:
   OUTPUT_BASE:  $OUTPUT_BASE
   MOVIES_DIR:   $MOVIES_DIR
   SERIES_DIR:   $SERIES_DIR
+  MOVIE_FORMAT: $MOVIE_FORMAT
+  SERIES_FORMAT:$SERIES_FORMAT
+  CLEANUP_DAYS: $CLEANUP_DAYS
+  BBB_URL:      $BBB_TORRENT_URL
 
 qBittorrent:
   Variant:      ${QBITTORRENT_VARIANT:-<auto>}
@@ -260,14 +276,10 @@ check_dependencies() {
   check_one_dependency docker "Docker" || missing=$((missing + 1))
   if check_one_dependency docker-compose "docker-compose"; then
     :
-  elif check_one_dependency docker "docker compose (via docker)"; then
-    if docker compose version >/dev/null 2>&1; then
-      echo "[OK]   Docker Compose plugin (docker compose)"
-    else
-      echo "[MISS] Docker Compose plugin not available"
-      missing=$((missing + 1))
-    fi
+  elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    echo "[OK]   Docker Compose plugin (docker compose)"
   else
+    echo "[MISS] Docker Compose plugin not available"
     missing=$((missing + 1))
   fi
   check_one_dependency qbittorrent "qBittorrent GUI" || true
@@ -440,6 +452,17 @@ configure_directories() {
   pause_prompt
 }
 
+configure_processing_defaults() {
+  print_section_header "CONFIGURATION: Processing Defaults"
+  MOVIE_FORMAT="$(prompt_with_default "Movie format" "$MOVIE_FORMAT")"
+  SERIES_FORMAT="$(prompt_with_default "Series format" "$SERIES_FORMAT")"
+  CLEANUP_DAYS="$(prompt_with_default "Cleanup days threshold" "$CLEANUP_DAYS")"
+  BBB_TORRENT_URL="$(prompt_with_default "BBB torrent URL" "$BBB_TORRENT_URL")"
+  save_config
+  show_integration_summary
+  pause_prompt
+}
+
 display_qb_discovery() {
   print_section_header "SETUP: qBittorrent Native + Docker Discovery"
   local local_detected
@@ -493,7 +516,13 @@ install_hook_guidance() {
       echo "Hook not found in config."
       read -r -p "Attempt safe in-file update for Program line? [y/N]: " answer
       if [[ "$answer" =~ ^[Yy]$ ]]; then
-        cp "$QB_CONFIG_PATH" "$QB_CONFIG_PATH.bak.$(date +%s)"
+        local backup_path="$QB_CONFIG_PATH.bak.$(date +%s)"
+        if ! cp "$QB_CONFIG_PATH" "$backup_path"; then
+          echo "Failed to create backup at $backup_path"
+          pause_prompt
+          return
+        fi
+        echo "Backup created at: $backup_path"
         awk -v cmd="$cmd" '
           BEGIN { has_program=0; has_toggle=0 }
           /^Downloads\\Program=/ { print "Downloads\\Program=" cmd; has_program=1; next }
@@ -631,8 +660,8 @@ run_filebot_on_path() {
     --action "$action_mode"
     --conflict "$conflict_mode"
     -non-strict
-    --def 'movieFormat={n} ({y})'
-    'seriesFormat={n}/Season {s}/{n} - {s00e00} - {t}'
+    --def "movieFormat=$MOVIE_FORMAT"
+    "seriesFormat=$SERIES_FORMAT"
     "$normalized"
   )
 
@@ -733,7 +762,7 @@ bbb_test_transmission_cli() {
     return
   fi
 
-  local torrent_url="https://webtorrent.io/torrents/big-buck-bunny.torrent"
+  local torrent_url="$BBB_TORRENT_URL"
   local target_dir="$TEMP_DIR/bbb-test"
   mkdir -p "$target_dir"
 
@@ -794,11 +823,11 @@ show_recent_import_reports() {
 cleanup_preview() {
   print_section_header "Maintenance: Cleanup Preview"
   echo "Preview (no deletion yet):"
-  echo "Candidate files in TEMP_DIR older than 7 days:"
-  find "$TEMP_DIR" -type f -mtime +7 2>/dev/null
+  echo "Candidate files in TEMP_DIR older than $CLEANUP_DAYS days:"
+  find "$TEMP_DIR" -type f -mtime +"$CLEANUP_DAYS" 2>/dev/null
   read -r -p "Delete listed old files now? [y/N]: " choice
   if [[ "$choice" =~ ^[Yy]$ ]]; then
-    find "$TEMP_DIR" -type f -mtime +7 -delete 2>/dev/null
+    find "$TEMP_DIR" -type f -mtime +"$CLEANUP_DAYS" -delete 2>/dev/null
     echo "Old files deleted from TEMP_DIR."
   fi
   pause_prompt
@@ -905,12 +934,14 @@ show_storage_summary() {
 
 test_plex_connectivity() {
   print_section_header "Maintenance: Plex Connectivity Test"
-  local url="$PLEX_URL"
-  if [ -n "$PLEX_TOKEN" ]; then
-    url="$url?X-Plex-Token=$PLEX_TOKEN"
-  fi
   echo "Testing: $PLEX_URL"
-  if curl -fsS --max-time 10 "$url" >/dev/null; then
+  if [ -n "$PLEX_TOKEN" ]; then
+    if curl -fsS --max-time 10 -H "X-Plex-Token: $PLEX_TOKEN" "$PLEX_URL" >/dev/null; then
+      echo "Plex connectivity: OK"
+    else
+      echo "Plex connectivity: FAILED"
+    fi
+  elif curl -fsS --max-time 10 "$PLEX_URL" >/dev/null; then
     echo "Plex connectivity: OK"
   else
     echo "Plex connectivity: FAILED"
@@ -986,17 +1017,19 @@ show_configuration_menu() {
     cat <<MENU
 1) Configure API credentials
 2) Configure directory paths
-3) Configure qBittorrent integration
-4) View current integration summary
-5) Back
+3) Configure processing defaults
+4) Configure qBittorrent integration
+5) View current integration summary
+6) Back
 MENU
     read -r -p "Choose an option: " choice
     case "$choice" in
       1) configure_api_credentials ;;
       2) configure_directories ;;
-      3) configure_qb_settings ;;
-      4) show_integration_summary; pause_prompt ;;
-      5) return ;;
+      3) configure_processing_defaults ;;
+      4) configure_qb_settings ;;
+      5) show_integration_summary; pause_prompt ;;
+      6) return ;;
       *) echo "Invalid option"; pause_prompt ;;
     esac
   done
