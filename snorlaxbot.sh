@@ -51,7 +51,7 @@ log_msg() {
   local level="$1"
   shift
   local message="$*"
-  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$message" | tee -a "$LOG_FILE" >/dev/null
+  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$message" | tee -a "$LOG_FILE"
 }
 
 mask_secret() {
@@ -205,7 +205,7 @@ build_qb_hook_command() {
 
 build_amc_command() {
   local source_path="$1"
-  printf 'filebot -script fn:amc --output "%s" --action duplicate --conflict auto -non-strict "%s" --def movieFormat="{n} ({y})" seriesFormat="{n}/Season {s}/{n} - {s00e00} - {t}"' "$OUTPUT_BASE" "$source_path"
+  printf 'filebot -script fn:amc --output "%s" --action duplicate --conflict auto -non-strict --def movieFormat="{n} ({y})" seriesFormat="{n}/Season {s}/{n} - {s00e00} - {t}" "%s"' "$OUTPUT_BASE" "$source_path"
 }
 
 show_integration_summary() {
@@ -314,7 +314,7 @@ find_qbittorrent_containers() {
   if ! command -v docker >/dev/null 2>&1; then
     return 0
   fi
-  docker ps --format '{{.Names}}|{{.Image}}' 2>/dev/null | awk -F'|' 'tolower($0) ~ /qbittorrent|qbit/ {print $1}'
+  docker ps --format '{{.Names}}|{{.Image}}' 2>/dev/null | awk -F'|' 'tolower($2) ~ /qbittorrent|qbit/ {print $1}'
 }
 
 inspect_container_mounts() {
@@ -494,16 +494,16 @@ install_hook_guidance() {
       read -r -p "Attempt safe in-file update for Program line? [y/N]: " answer
       if [[ "$answer" =~ ^[Yy]$ ]]; then
         cp "$QB_CONFIG_PATH" "$QB_CONFIG_PATH.bak.$(date +%s)"
-        if grep -q '^Downloads\\Program=' "$QB_CONFIG_PATH"; then
-          sed -i "s#^Downloads\\Program=.*#Downloads\\Program=$cmd#" "$QB_CONFIG_PATH"
-        else
-          printf '\nDownloads\\Program=%s\n' "$cmd" >> "$QB_CONFIG_PATH"
-        fi
-        if grep -q '^Downloads\\RunExternalProgram=' "$QB_CONFIG_PATH"; then
-          sed -i 's/^Downloads\\RunExternalProgram=.*/Downloads\\RunExternalProgram=true/' "$QB_CONFIG_PATH"
-        else
-          printf 'Downloads\\RunExternalProgram=true\n' >> "$QB_CONFIG_PATH"
-        fi
+        awk -v cmd="$cmd" '
+          BEGIN { has_program=0; has_toggle=0 }
+          /^Downloads\\Program=/ { print "Downloads\\Program=" cmd; has_program=1; next }
+          /^Downloads\\RunExternalProgram=/ { print "Downloads\\RunExternalProgram=true"; has_toggle=1; next }
+          { print }
+          END {
+            if (!has_program) print "Downloads\\Program=" cmd
+            if (!has_toggle) print "Downloads\\RunExternalProgram=true"
+          }
+        ' "$QB_CONFIG_PATH" > "$QB_CONFIG_PATH.tmp" && mv "$QB_CONFIG_PATH.tmp" "$QB_CONFIG_PATH"
         echo "Updated config. Restart qBittorrent to apply."
       fi
     fi
@@ -567,8 +567,7 @@ show_qb_optimization_help() {
   echo "Path consistency checks:"
   for path_var in FINISHED_DIR TEMP_DIR WATCH_DIR OUTPUT_BASE MOVIES_DIR SERIES_DIR; do
     local path_value=""
-    # shellcheck disable=SC2086
-    path_value="$(eval echo \$$path_var)"
+    path_value="${!path_var}"
     if [ -d "$path_value" ]; then
       echo "  [OK] $path_var exists: $path_value"
     else
@@ -617,23 +616,35 @@ run_filebot_on_path() {
     return 1
   fi
 
-  local amc_cmd
-  amc_cmd="$(build_amc_command "$normalized")"
+  local action_mode="duplicate"
+  local conflict_mode="auto"
+  if [ "$mode" = "dry" ]; then
+    action_mode="test"
+  elif [ "$mode" = "force" ]; then
+    conflict_mode="override"
+  fi
+
+  local -a amc_cmd=(
+    filebot
+    -script fn:amc
+    --output "$OUTPUT_BASE"
+    --action "$action_mode"
+    --conflict "$conflict_mode"
+    -non-strict
+    --def 'movieFormat={n} ({y})'
+    'seriesFormat={n}/Season {s}/{n} - {s00e00} - {t}'
+    "$normalized"
+  )
 
   echo "Running FileBot mode=$mode path=$normalized"
   log_msg "INFO" "Running FileBot mode=$mode path=$normalized"
 
-  if [ "$mode" = "dry" ]; then
-    amc_cmd="$amc_cmd --def ut_kind=multi --action test"
-  elif [ "$mode" = "force" ]; then
-    amc_cmd="$amc_cmd --conflict override"
-  fi
-
   echo "Command:"
-  echo "  $amc_cmd"
+  printf '  %q ' "${amc_cmd[@]}"
+  echo
 
   if command -v filebot >/dev/null 2>&1; then
-    if eval "$amc_cmd"; then
+    if "${amc_cmd[@]}"; then
       log_msg "INFO" "FILEBOT_RESULT success path=$normalized mode=$mode"
       printf '%s | success | %s | %s\n' "$(date '+%F %T')" "$mode" "$normalized" >> "$IMPORT_REPORT_FILE"
       echo "FileBot completed successfully."
@@ -784,7 +795,7 @@ cleanup_preview() {
   print_section_header "Maintenance: Cleanup Preview"
   echo "Preview (no deletion yet):"
   echo "Candidate files in TEMP_DIR older than 7 days:"
-  find "$TEMP_DIR" -type f -mtime +7 2>/dev/null | head -n 50
+  find "$TEMP_DIR" -type f -mtime +7 2>/dev/null
   read -r -p "Delete listed old files now? [y/N]: " choice
   if [[ "$choice" =~ ^[Yy]$ ]]; then
     find "$TEMP_DIR" -type f -mtime +7 -delete 2>/dev/null
@@ -831,7 +842,7 @@ check_mount_permissions_disk() {
       else
         echo "  Writable: no"
       fi
-      df -h "$p" | tail -n +1
+      df -h "$p"
     else
       echo "  Exists: no"
     fi
@@ -846,7 +857,21 @@ find_duplicates() {
   for root in "$MOVIES_DIR" "$SERIES_DIR"; do
     [ -d "$root" ] || continue
     echo "Checking $root"
-    find "$root" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) -printf '%f\n' 2>/dev/null | sort | uniq -d | sed 's/^/  duplicate filename: /'
+    find "$root" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) -printf '%s|%f|%p\n' 2>/dev/null | sort | awk -F'|' '
+      {
+        key = $1 "|" $2
+        count[key]++
+        paths[key] = paths[key] sprintf("    %s\n", $3)
+      }
+      END {
+        for (k in count) {
+          if (count[k] > 1) {
+            split(k, meta, "|")
+            printf("  duplicate candidate (%s bytes, %s):\n%s", meta[1], meta[2], paths[k])
+          }
+        }
+      }
+    '
   done
   pause_prompt
 }
@@ -856,7 +881,7 @@ show_storage_summary() {
   local p
   for p in "$FINISHED_DIR" "$TEMP_DIR" "$WATCH_DIR" "$OUTPUT_BASE" "$MOVIES_DIR" "$SERIES_DIR"; do
     if [ -d "$p" ]; then
-      du -sh "$p" 2>/dev/null | sed "s#^#$p -> #"
+      du -sh "$p" 2>/dev/null | awk -v p="$p" '{print p " -> " $1}'
     else
       echo "$p -> missing"
     fi
