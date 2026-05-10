@@ -236,11 +236,11 @@ build_qb_hook_command() {
 }
 
 build_amc_command() {
-  local mfmt="$MOVIES_DIR/{n} ({y})"
-  local sfmt="$SERIES_DIR/{n}/{'Season '+s}/{n} - {s00e00}"
-  local plex_arg="${PLEX_HOST:-localhost}:${PLEX_TOKEN:0:6}***"
-  local push_arg="${PUSHOVER_USER:0:6}***:${PUSHOVER_TOKEN:0:6}***"
-  local gmail_arg="${GMAIL_USER:-}:***"
+  local mfmt="${MOVIE_FORMAT:-{n} ({y})}"
+  local sfmt="${SERIES_FORMAT:-{n}/{'Season '+s}/{n} - {s00e00}}"
+  local plex_arg="${PLEX_HOST:-localhost}:$(mask_secret "$PLEX_TOKEN")"
+  local push_arg="$(mask_secret "$PUSHOVER_USER"):$(mask_secret "$PUSHOVER_TOKEN")"
+  local gmail_arg="${GMAIL_USER:-}:$(mask_secret "$GMAIL_PASS")"
   printf 'filebot -script fn:amc \\\n    --output "%s" --action copy -non-strict \\\n    --def "ut_kind=multi" \\\n    --def "ut_dir=%s" \\\n    --def "movieFormat=%s" \\\n    --def "seriesFormat=%s" \\\n    --def plex="%s" \\\n    --def pushover="%s" \\\n    --def gmail="%s"' \
     "$OUTPUT_BASE" "$FINISHED_DIR" "$mfmt" "$sfmt" \
     "$plex_arg" "$push_arg" "$gmail_arg"
@@ -709,6 +709,7 @@ setup_install_hook() {
           return
         fi
         ok "Backup created: $backup_path"
+        local awk_ok=0
         awk -v cmd="$cmd" '
           BEGIN { has_program=0; has_toggle=0 }
           /^Downloads\\Program=/ { print "Downloads\\Program=" cmd; has_program=1; next }
@@ -718,9 +719,14 @@ setup_install_hook() {
             if (!has_program) print "Downloads\\Program=" cmd
             if (!has_toggle) print "Downloads\\RunExternalProgram=true"
           }
-        ' "$QB_CONFIG_PATH" > "$QB_CONFIG_PATH.tmp" \
-          && mv "$QB_CONFIG_PATH.tmp" "$QB_CONFIG_PATH"
-        ok "Config updated. Restart qBittorrent to apply."
+        ' "$QB_CONFIG_PATH" > "$QB_CONFIG_PATH.tmp" && awk_ok=1
+        if [ "$awk_ok" -eq 1 ] && mv "$QB_CONFIG_PATH.tmp" "$QB_CONFIG_PATH"; then
+          ok "Config updated. Restart qBittorrent to apply."
+        else
+          rm -f "$QB_CONFIG_PATH.tmp"
+          fail "Config update failed — restoring backup"
+          cp "$backup_path" "$QB_CONFIG_PATH" || fail "Restore also failed; manual fix may be required"
+        fi
       fi
     fi
   else
@@ -824,7 +830,10 @@ _validate() {
   [[ -z "$PUSHOVER_TOKEN" ]] && errors+=("Pushover API token not set")
   [[ ! -d "$FINISHED_DIR" ]] && errors+=("Source dir missing: $FINISHED_DIR")
   if [[ ${#errors[@]} -gt 0 ]]; then
-    for e in "${errors[@]}"; do warn "$e"; done
+    for e in "${errors[@]}"; do
+      warn "$e"
+      log_msg "WARN" "_validate: $e"
+    done
     blank
     confirm "Continue anyway (notifications may fail)?" || return 1
   fi
@@ -1106,7 +1115,9 @@ maint_find_duplicates() {
   blank
 
   _get_size() {
-    stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0
+    local sz
+    sz="$(stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null)" || { echo ""; return; }
+    [ "${sz:-0}" -gt 0 ] 2>/dev/null && echo "$sz" || echo ""
   }
 
   local root
@@ -1117,7 +1128,7 @@ maint_find_duplicates() {
       | while IFS= read -r media_file; do
           local size
           size="$(_get_size "$media_file")"
-          [ "${size:-0}" -gt 0 ] 2>/dev/null || continue
+          [ -n "$size" ] || continue
           printf '%s|%s|%s\n' "$size" "$(basename "$media_file")" "$media_file"
         done \
       | sort | awk -F'|' '

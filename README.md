@@ -4,6 +4,8 @@ SnorlaxBot is a single-file Bash app that wraps **FileBot AMC** in a FileBot Man
 
 ## Install
 
+> **Security note:** Always inspect scripts before piping them to `sudo bash`. Download and review `install.sh` from the repo before running.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alittler/snorlaxbot/main/install.sh | sudo bash
 ```
