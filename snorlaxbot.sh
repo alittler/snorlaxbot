@@ -237,7 +237,7 @@ Directories:
   MOVIES_DIR:   $MOVIES_DIR
   SERIES_DIR:   $SERIES_DIR
   MOVIE_FORMAT: $MOVIE_FORMAT
-  SERIES_FORMAT:$SERIES_FORMAT
+  SERIES_FORMAT: $SERIES_FORMAT
   CLEANUP_DAYS: $CLEANUP_DAYS
   BBB_URL:      $BBB_TORRENT_URL
 
@@ -543,11 +543,7 @@ install_hook_guidance() {
   if [ -n "$DOCKER_COMPOSE_FILE" ] && [ -f "$DOCKER_COMPOSE_FILE" ]; then
     echo
     echo "Compose file provided: $DOCKER_COMPOSE_FILE"
-    if rg --version >/dev/null 2>&1; then
-      rg -n "qbit|qbittorrent|volumes|downloads|watch|config" "$DOCKER_COMPOSE_FILE" || true
-    else
-      grep -nE "qbit|qbittorrent|volumes|downloads|watch|config" "$DOCKER_COMPOSE_FILE" || true
-    fi
+    grep -nE "qbit|qbittorrent|volumes?|downloads|watch|config" "$DOCKER_COMPOSE_FILE" || true
   fi
 
   save_config
@@ -623,7 +619,7 @@ show_qb_optimization_help() {
   if [ -n "$DOCKER_COMPOSE_FILE" ] && [ -f "$DOCKER_COMPOSE_FILE" ]; then
     echo
     echo "Compose inspection hints from: $DOCKER_COMPOSE_FILE"
-    grep -nE 'qbit|qbittorrent|volume|download|watch|config' "$DOCKER_COMPOSE_FILE" || true
+    grep -nE 'qbit|qbittorrent|volumes?|downloads?|watch|config' "$DOCKER_COMPOSE_FILE" || true
   fi
 
   pause_prompt
@@ -882,11 +878,24 @@ check_mount_permissions_disk() {
 
 find_duplicates() {
   print_section_header "Maintenance: Duplicate Detection"
+  get_file_size() {
+    local file_path="$1"
+    if stat -c %s "$file_path" >/dev/null 2>&1; then
+      stat -c %s "$file_path"
+    else
+      stat -f %z "$file_path" 2>/dev/null
+    fi
+  }
   local root
   for root in "$MOVIES_DIR" "$SERIES_DIR"; do
     [ -d "$root" ] || continue
     echo "Checking $root"
-    find "$root" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) -printf '%s|%f|%p\n' 2>/dev/null | sort | awk -F'|' '
+    find "$root" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) 2>/dev/null | while IFS= read -r media_file; do
+      local size
+      size="$(get_file_size "$media_file")"
+      [ -n "$size" ] || continue
+      printf '%s|%s|%s\n' "$size" "$(basename "$media_file")" "$media_file"
+    done | sort | awk -F'|' '
       {
         key = $1 "|" $2
         count[key]++
