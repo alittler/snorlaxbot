@@ -59,7 +59,16 @@ main() {
   echo
   echo "Run with:"
   echo "  ${BIN_LINK}"
-  if [[ ":${PATH}:" != *":${bin_dir}:"* ]]; then
+  local bin_in_path=0
+  local path_entry
+  IFS=':' read -r -a path_entries <<< "${PATH:-}"
+  for path_entry in "${path_entries[@]}"; do
+    if [[ "${path_entry}" == "${bin_dir}" ]]; then
+      bin_in_path=1
+      break
+    fi
+  done
+  if [[ "${bin_in_path}" -eq 0 ]]; then
     echo
     echo "Note:"
     echo "  ${bin_dir} is not currently in PATH for this shell."
