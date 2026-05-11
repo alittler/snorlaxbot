@@ -49,7 +49,9 @@ main() {
   chmod 0755 "${INSTALL_DIR}/${SCRIPT_NAME}"
 
   log "Creating launcher symlink at ${BIN_LINK}"
-  mkdir -p "$(dirname "${BIN_LINK}")"
+  local bin_dir
+  bin_dir="$(dirname "${BIN_LINK}")"
+  mkdir -p "${bin_dir}"
   rm -f "${BIN_LINK}"
   ln -s "${INSTALL_DIR}/${SCRIPT_NAME}" "${BIN_LINK}"
 
@@ -57,10 +59,10 @@ main() {
   echo
   echo "Run with:"
   echo "  ${BIN_LINK}"
-  if [[ ":${PATH}:" != *":$(dirname "${BIN_LINK}"):"* ]]; then
+  if [[ ":${PATH}:" != *":${bin_dir}:"* ]]; then
     echo
     echo "Note:"
-    echo "  $(dirname "${BIN_LINK}") is not currently in PATH for this shell."
+    echo "  ${bin_dir} is not currently in PATH for this shell."
   fi
   echo
   echo "Or directly:"
