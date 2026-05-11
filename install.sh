@@ -72,6 +72,8 @@ main() {
     echo
     echo "Note:"
     echo "  ${bin_dir} is not currently in PATH for this shell."
+    echo "  Add it for this session with:"
+    echo "    export PATH=\"${bin_dir}:\$PATH\""
   fi
   echo
   echo "Or directly:"
