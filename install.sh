@@ -54,11 +54,8 @@ main() {
 
   log "Installation complete"
   echo
-  echo "Run with:"
-  echo "  ${BIN_LINK}"
-  echo
-  echo "Or directly:"
-  echo "  /bin/bash ${INSTALL_DIR}/${SCRIPT_NAME}"
+  echo "Launching SnorlaxBot..."
+  /bin/bash "${INSTALL_DIR}/${SCRIPT_NAME}"
 }
 
 main "$@"
