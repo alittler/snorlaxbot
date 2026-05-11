@@ -43,7 +43,7 @@ main() {
   mkdir -p "${INSTALL_DIR}"
 
   log "Downloading ${SCRIPT_NAME}"
-  curl -fsS "${SCRIPT_URL}" -o "${INSTALL_DIR}/${SCRIPT_NAME}"
+  curl -fsSL "${SCRIPT_URL}" -o "${INSTALL_DIR}/${SCRIPT_NAME}"
 
   log "Setting executable permissions"
   chmod 0755 "${INSTALL_DIR}/${SCRIPT_NAME}"
@@ -57,6 +57,11 @@ main() {
   echo
   echo "Run with:"
   echo "  ${BIN_LINK}"
+  if [[ ":${PATH}:" != *":$(dirname "${BIN_LINK}"):"* ]]; then
+    echo
+    echo "Note:"
+    echo "  $(dirname "${BIN_LINK}") is not currently in PATH for this shell."
+  fi
   echo
   echo "Or directly:"
   echo "  /bin/bash ${INSTALL_DIR}/${SCRIPT_NAME}"
