@@ -2,6 +2,12 @@
 
 SnorlaxBot is a single-file Bash FileBot manager with setup, configuration, qBittorrent integration (native or Docker), transmission-cli testing, and maintenance diagnostics.
 
+## Install
+
+```bash
+curl -fsS https://raw.githubusercontent.com/alittler/snorlaxbot/main/install.sh | bash
+```
+
 ## Run
 
 ```bash

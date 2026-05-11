@@ -5,8 +5,16 @@ REPO_OWNER="alittler"
 REPO_NAME="snorlaxbot"
 BRANCH="${BRANCH:-main}"
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/snorlaxbot}"
-BIN_LINK="${BIN_LINK:-/usr/local/bin/snorlaxbot}"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  DEFAULT_INSTALL_DIR="/opt/snorlaxbot"
+  DEFAULT_BIN_LINK="/usr/local/bin/snorlaxbot"
+else
+  DEFAULT_INSTALL_DIR="${HOME}/.local/share/snorlaxbot"
+  DEFAULT_BIN_LINK="${HOME}/.local/bin/snorlaxbot"
+fi
+
+INSTALL_DIR="${INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
+BIN_LINK="${BIN_LINK:-${DEFAULT_BIN_LINK}}"
 SCRIPT_NAME="snorlaxbot.sh"
 SCRIPT_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/${SCRIPT_NAME}"
 
@@ -19,18 +27,11 @@ die() {
   exit 1
 }
 
-require_root() {
-  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    die "Please run as root (for example: curl -fsSL ... | sudo bash)"
-  fi
-}
-
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
 main() {
-  require_root
   require_cmd curl
   require_cmd install
   require_cmd chmod
@@ -42,7 +43,7 @@ main() {
   mkdir -p "${INSTALL_DIR}"
 
   log "Downloading ${SCRIPT_NAME}"
-  curl -fsSL "${SCRIPT_URL}" -o "${INSTALL_DIR}/${SCRIPT_NAME}"
+  curl -fsS "${SCRIPT_URL}" -o "${INSTALL_DIR}/${SCRIPT_NAME}"
 
   log "Setting executable permissions"
   chmod 0755 "${INSTALL_DIR}/${SCRIPT_NAME}"
